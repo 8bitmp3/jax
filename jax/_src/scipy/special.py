@@ -13,18 +13,20 @@
 # limitations under the License.
 
 from functools import partial
+import operator
 from typing import cast, Any, List, Optional, Tuple
 
 import numpy as np
 import scipy.special as osp_special
 
 from jax._src import api
+from jax._src import dtypes
 from jax import jit
 from jax import lax, core
 from jax.interpreters import ad
 import jax.numpy as jnp
 from jax._src.lax.lax import _const as _lax_const
-from jax._src.numpy.lax_numpy import _promote_args_inexact
+from jax._src.numpy.lax_numpy import _promote_args_inexact, _promote_dtypes_inexact
 from jax._src.numpy.util import _wraps
 from jax._src.ops import special as ops_special
 from jax._src.typing import Array, ArrayLike
@@ -639,6 +641,106 @@ def i1(x: ArrayLike) -> Array:
   x, = _promote_args_inexact("i1", x)
   return lax.mul(lax.exp(lax.abs(x)), lax.bessel_i1e(x))
 
+def _bessel_jn_loop_body_fun(i, val):
+  j_vals, f0, f1, f, bs, z, n_iter = val
+  k = n_iter - i
+  f = 2.0 * (k + 1.0) * f1 / z - f0
+  j_vals = j_vals.at[k].set(f)
+
+  def true_fn_update_bs(u):
+    bs, f = u
+    return bs + 2.0 * f
+
+  def false_fn_update_bs(u):
+    bs, _ = u
+    return bs
+
+  bs = lax.cond(jnp.mod(k, 2) == 0, true_fn_update_bs,
+                false_fn_update_bs, operand=(bs, f))
+
+  f0 = f1
+  f1 = f
+  return j_vals, f0, f1, f, bs, z, n_iter
+
+@partial(jit, static_argnums=(0, 2))
+def bessel_jn(v: int, z: float, n_iter: int=50) -> Array:
+  """Bessel function of the first kind of integer order and real argument.
+
+  Reference:
+  Shanjie Zhang and Jian-Ming Jin. Computation of special functions.
+  Wiley-Interscience, 1996.
+
+  Args:
+    v: The order (int) of the Bessel function.
+    z: A vector of type `float32` or `float64` containing the sampling
+      points at which the Bessel function are computed.
+    n_iter: The number of iterations required for updating the function
+      values. As a rule of thumb, `n_iter` is the smallest nonnegative integer
+      that satisfies the condition
+      `int(0.5 * log10(6.28 + n_iter) - n_iter *  log10(1.36 + abs(z) / n_iter)) > 20`.
+      Details in `BJNDD` (https://people.sc.fsu.edu/~jburkardt/f77_src/special_functions/special_functions.f)
+
+  Returns:
+    A vector containing the values of the Bessel function of
+    orders 0, 1, ..., v. The return type matches the type of `z`.
+
+  Raises:
+    NotImplementedError if `v` is not integer.
+    NotImplementedError if elements of array `z` are not in (float32, float64).
+  """
+  z, = _promote_dtypes_inexact(z)
+  z_dtype = lax.dtype(z)
+  if dtypes.issubdtype(z_dtype, complex):
+    raise ValueError("complex input not supported.")
+
+  v = core.concrete_or_error(operator.index, v, 'Argument v of bessel_jn.')
+  n_iter = core.concrete_or_error(int, n_iter, 'Argument n_iter of bessel_jn.')
+
+  j_vals = jnp.zeros(shape=(n_iter + 1), dtype=z_dtype)
+  f0 = jnp.array([0.0], dtype=z_dtype)[0]
+  f1 = jnp.array([1E-16], dtype=z_dtype)[0]
+  f = jnp.array([0.0], dtype=z_dtype)[0]
+  bs = jnp.array([0.0], dtype=z_dtype)[0]
+
+  j_vals, _, _, f, bs, _, _ = lax.fori_loop(
+      lower=0, upper=n_iter+1, body_fun=_bessel_jn_loop_body_fun,
+      init_val=(j_vals, f0, f1, f, bs, z, n_iter))
+
+  j_vals = j_vals[:v+1]
+  j_vals = j_vals / (bs - f)
+
+  return j_vals
+
+# TODO: Expose after adding gradients of `bessel_jn` and matching scipy API.
+def jv(v, z) -> Array:
+  """Bessel function of the first kind of real order and complex argument.
+
+  Args:
+    v: The order of the Bessel function.
+    z: A vector containing the sampling points at which the Bessel function are
+      computed.
+
+  Returns:
+    A vector containing the values of the Bessel function of
+    orders 0, 1, ..., v. The return type matches the type of `z`.
+
+  Raises:
+    NotImplementedError if `v` is not integer.
+    NotImplementedError if elements of array `z` are not in (float32, float64).
+  """
+  order_dtype = lax.dtype(v)
+  if order_dtype not in (jnp.int32, jnp.int64):
+    raise NotImplementedError(
+        'order dtype={} is not supported.'.format(order_dtype))
+
+  z_dtype = lax.dtype(z)
+  if z_dtype not in (jnp.float32, jnp.float64):
+    raise NotImplementedError(
+        'z.dtype={} is not supported, see docstring for supported types.'
+        .format(z_dtype))
+
+  v = core.concrete_or_error(int, v, 'Argument v of jn.')
+  return bessel_jn(v, z)
 
 def _gen_recurrence_mask(
     l_max: int, is_normalized: bool, dtype: Any

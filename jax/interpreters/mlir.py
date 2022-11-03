@@ -1541,6 +1541,12 @@ def _emit_tpu_python_callback(
   ctx.module_context.add_host_callback(opaque)
   return outputs, token, opaque
 
+def _aval_to_default_layout(aval):
+  arange = np.arange(aval.ndim, dtype='int64')[::-1].copy()
+  return ir.DenseIntElementsAttr.get(arange, type=ir.IndexType.get())
+
+def _avals_to_default_layouts(avals):
+  return ir.ArrayAttr.get([_aval_to_default_layout(a) for a in avals])
 
 def emit_python_callback(
     ctx: LoweringRuleContext, callback, token: Optional[Any],
@@ -1616,8 +1622,9 @@ def emit_python_callback(
       api_version=i32_attr(2),
       called_computations=ir.ArrayAttr.get([]),
       backend_config=ir.StringAttr.get(str(callback_descriptor)),
-      operand_layouts=None,
-      result_layouts=None)
+      operand_layouts=_avals_to_default_layouts(
+        [core.ShapedArray((), np.int32), *ctx.avals_in]),
+      result_layouts=_avals_to_default_layouts(ctx.avals_out))
   if sharding is not None:
     set_sharding(result, sharding)
   results = [

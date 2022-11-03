@@ -190,6 +190,37 @@ class DebugPrintTest(jtu.JaxTestCase):
       jax.effects_barrier()
     self.assertEqual(output(), f"x: {str(dict(foo=np.array(2, np.int32)))}\n")
 
+  def test_debug_print_should_use_default_layout(self):
+    data = np.array(
+        [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14],
+         [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14]], dtype=np.int32)
+    @jax.jit
+    def f(x):
+      jax.debug.print("{}", x)
+
+    with jtu.capture_stdout() as output:
+      f(data)
+      jax.effects_barrier()
+    self.assertEqual(output(), _format_multiline("""
+        [[ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]
+         [ 1  2  3  4  5  6  7  8  9 10 12 13 14]]
+    """))
+
+
+
+
 class DebugPrintTransformationTest(jtu.JaxTestCase):
 
   def test_debug_print_batching(self):
